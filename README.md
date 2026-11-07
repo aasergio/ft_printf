@@ -124,4 +124,4 @@ The trade-off is many small `write()` calls instead of one large one. That is sl
 
 ### Use of AI
 
-AI (Claude) was used to help write and structure this README from my source files. <!-- Add any other way you used AI here, e.g. explaining va_list or testing edge cases. --> The code itself was written by me.
+AI (Claude) was used to help write and structure this README from my source files. The code itself was written by me.
