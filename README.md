@@ -4,15 +4,15 @@
 
 ## Description
 
-`ft_printf` is a reimplementation of the C standard library function `printf()`. The goal of the project is to learn how variadic functions work in C (`va_start`, `va_arg`, `va_end`), how to parse a format string, and how to build a small, well-structured library that can be reused in later projects.
+`ft_printf` is a reimplementation of the C standard library function `printf()`. The goal of the project is to learn how variadic functions work in C (`va_start`, `va_arg`, `va_end`), how to parse a format string, and how to package the result as a reusable static library.
 
-The result is a static library, `libftprintf.a`, exposing a single function:
+The project builds `libftprintf.a`, which contains my `libft` plus a single public function:
 
 ```c
-int ft_printf(const char *format, ...);
+int ft_printf(const char *s, ...);
 ```
 
-It writes the formatted output to standard output and returns the number of characters printed (or `-1` on error), just like the original `printf`.
+It writes the formatted output to standard output and returns the number of characters printed.
 
 ### Supported conversions
 
@@ -20,7 +20,7 @@ It writes the formatted output to standard output and returns the number of char
 |------------|--------|
 | `%c` | A single character |
 | `%s` | A string (`(null)` if the pointer is `NULL`) |
-| `%p` | A pointer address in hexadecimal, prefixed with `0x` (`(nil)` if `NULL`) |
+| `%p` | A pointer address in lowercase hexadecimal, prefixed with `0x` (`(nil)` if `NULL`) |
 | `%d` | A signed decimal integer |
 | `%i` | A signed integer in base 10 |
 | `%u` | An unsigned decimal integer |
@@ -32,31 +32,32 @@ It writes the formatted output to standard output and returns the number of char
 
 ### Requirements
 
-- A C compiler (`cc`) and `make`
-- Compiled with `-Wall -Wextra -Werror`
+- `cc` and `make`
+- Everything compiles with `-Wall -Wextra -Werror`
 
 ### Repository layout
 
 ```
 .
 ├── Makefile
-├── libft/        # my libft, built and merged into libftprintf.a
-├── inc/          # header file(s)
-└── src/          # ft_printf source files
+├── ft_printf.h         # prototypes and base-digit macros
+├── ft_printf.c         # ft_printf() and the conversion dispatcher
+├── ft_printf_utils.c   # character, string and number printers
+└── libft/              # my libft (built and merged into libftprintf.a)
 ```
 
 ### Compilation
 
 ```sh
-make        # builds libftprintf.a (and libft)
-make clean  # removes object files
-make fclean # removes object files and libftprintf.a
-make re     # fclean + make
+make        # builds libft, then libftprintf.a
+make clean  # removes the obj/ directory (and libft objects)
+make fclean # also removes libftprintf.a and libft.a
+make re     # fclean + all
 ```
 
-### Usage
+The Makefile first builds `libft/libft.a`, copies it to `libftprintf.a`, and then adds the `ft_printf` object files to it with `ar -rcs`. The result is one archive that contains both libraries. Object files go into `obj/`, and `-MMD -MP` generates dependency files so that changing a header triggers a rebuild.
 
-Include the header and link the library:
+### Usage
 
 ```c
 #include "ft_printf.h"
@@ -65,48 +66,62 @@ int main(void)
 {
     int n;
 
-    n = ft_printf("Hello %s, you are %d years old (%x in hex)\n", "Aries", 25, 25);
+    n = ft_printf("Hello %s, %d in hex is %x, ptr: %p\n", "world", 42, 42, &n);
     ft_printf("Printed %d characters\n", n);
     return (0);
 }
 ```
 
 ```sh
-cc -Wall -Wextra -Werror main.c -Iinc -L. -lftprintf -o test
+cc -Wall -Wextra -Werror main.c -I. -Ilibft -L. -lftprintf -o test
 ./test
 ```
 
+`-Ilibft` is needed because `ft_printf.h` includes `<libft.h>`.
+
 ## Algorithm and data structure
 
-### Parsing the format string
+### Parsing: a single left-to-right pass
 
-`ft_printf` walks the format string once, from left to right:
+`ft_printf` walks the format string once with an index `i`:
 
-1. Ordinary characters are written directly with `write()` and counted.
-2. When a `%` is found, the next character is read as the conversion specifier.
-3. The specifier is passed, together with the `va_list`, to a dispatch function that pulls the correct argument type with `va_arg` and calls the matching print helper.
-4. Each helper returns how many characters it wrote; these are added to a running total, which is the final return value.
+1. An ordinary character is written immediately with `write()`, and the counter goes up by one.
+2. When the function finds `%`, it passes the next character to `ft_letter()`, a dispatcher. The dispatcher pulls the matching argument type with `va_arg` and calls the right printer.
+3. A `%` at the very end of the string (with nothing after it) stops the loop.
+4. An unrecognised specifier prints nothing.
 
-This single-pass approach is O(n) in the length of the format string plus the length of the output, needs no extra memory, and mirrors how the real `printf` reads its format.
+This runs in O(n) time in the length of the format string plus the output, and it uses constant extra memory.
 
-### Data structure
+### State: one `int` passed by pointer
 
-No complex data structure is needed: the state is just the format string pointer, the `va_list`, and an `int` counter. Keeping it this small was a deliberate choice:
+The only state is the `va_list` and an `int res`, the number of characters written so far. Every printer receives `int *res` and adds the number of bytes it writes, so the total is always correct, whichever helpers run and however deep the recursion goes. `ft_printf` returns `res` at the end.
 
-- **No buffer / no `malloc`** — characters are written as soon as they are known, so there is nothing to allocate or free and no risk of leaks.
-- **One helper per conversion** — each conversion (`char`, string, pointer, signed number, unsigned number in a given base) has its own small function, which keeps every function within the Norm limits and makes it easy to add new specifiers.
-- **Shared base conversion** — `%u`, `%x`, `%X` and `%p` all go through the same recursive "print number in base" routine, with only the base and digit set changing. Recursion prints digits in the correct order without needing a temporary array.
-- **`%p` uses `unsigned long`** — addresses are cast to an unsigned type wide enough for a pointer on 64-bit systems before conversion.
-- **`%d` / `%i` handle `INT_MIN`** — the value is promoted to `long` before negating, so the minimum integer prints correctly.
+I chose this design over having each helper return its own count because it keeps the dispatcher very small. Every branch is just a function call, with no return values to collect and add together.
+
+### Printers
+
+- **`ft_putchar_pr` / `ft_putstr_pr`** write a character or a whole string in one `write()` call. A `NULL` string prints `(null)`.
+- **`ft_putnbr_any(unsigned long n, char *system, int *res)`** is a generic base printer. The base is the length of the digit string (`DEC`, `HEXLOW` or `HEXUP`, defined as macros in the header), and the digit for each value is just `system[n]`. It recurses on `n / base` before printing `n % base`, so the digits come out in the right order without a temporary buffer. The same function handles `%u`, `%x`, `%X` and `%p`.
+- **`ft_putnbr_d`** handles signed integers. It prints a `-` and negates negative numbers, then prints the digits recursively. `INT_MIN` (`-2147483648`) cannot be negated in an `int`, so the function special-cases it and writes it as a fixed string.
+- **`%p`** casts the pointer to `uintptr_t`, an integer type guaranteed to hold a pointer. The function writes `0x` and then prints the value with `ft_putnbr_any` in lowercase hex. A `NULL` pointer prints `(nil)`, which matches glibc's `printf`.
+
+### Why no buffer and no `malloc`
+
+The function writes output as soon as it knows each character. This means:
+- there is nothing to allocate, so there are no leaks and no allocation failures to handle;
+- every function stays short enough for the Norm;
+- adding a new conversion only takes one new branch in `ft_letter()`, and usually no new printer, because most numeric formats can reuse `ft_putnbr_any` with a different base string.
+
+The trade-off is many small `write()` calls instead of one large one. That is slower than a buffered `printf`, but it is much simpler and fast enough for this project.
 
 ## Resources
 
 - `man 3 printf` — reference behavior for every conversion
-- `man 3 stdarg` — variadic function macros (`va_start`, `va_arg`, `va_copy`, `va_end`)
+- `man 3 stdarg` — `va_start`, `va_arg`, `va_end`
 - [cppreference — printf](https://en.cppreference.com/w/c/io/fprintf)
 - [cppreference — Variadic functions](https://en.cppreference.com/w/c/variadic)
 - [GNU C Library manual — Variadic Functions](https://www.gnu.org/software/libc/manual/html_node/Variadic-Functions.html)
 
 ### Use of AI
 
-AI (Claude) was used to help draft and structure this README. All code in `src/` and `inc/` was written by me.
+AI (Claude) was used to help write and structure this README from my source files. <!-- Add any other way you used AI here, e.g. explaining va_list or testing edge cases. --> The code itself was written by me.
